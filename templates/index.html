@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GetDigitals Flow — Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f0f14;
+    color: #eaeaf0;
+    margin: 0;
+    padding: 40px 20px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 {
+    background: linear-gradient(90deg, #ff7a18, #af002d);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-size: 28px;
+    margin-bottom: 4px;
+  }
+  .subtitle { color: #999; margin-bottom: 28px; font-size: 14px; }
+  .status {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 24px;
+  }
+  .status.ok { background: #1b3d2f; color: #4ade80; }
+  .status.warn { background: #3d2f1b; color: #fbbf24; }
+  .card {
+    background: #17171f;
+    border: 1px solid #2a2a35;
+    border-radius: 14px;
+    padding: 22px;
+    margin-bottom: 20px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 16px; }
+  input[type=text] {
+    width: 100%;
+    padding: 11px 14px;
+    background: #0f0f14;
+    border: 1px solid #2a2a35;
+    border-radius: 8px;
+    color: #eaeaf0;
+    font-size: 14px;
+    margin-bottom: 10px;
+  }
+  button {
+    background: linear-gradient(90deg, #ff7a18, #af002d);
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: #23232f;
+    color: #eaeaf0;
+  }
+  .files-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .file-card {
+    background: #0f0f14;
+    border: 1px solid #2a2a35;
+    border-radius: 10px;
+    padding: 10px;
+    text-align: center;
+  }
+  .file-card img { width: 100%; height: 90px; object-fit: cover; border-radius: 6px; background: #23232f; }
+  .file-card .name { font-size: 11px; color: #999; margin: 6px 0; word-break: break-word; }
+  .file-card button { width: 100%; font-size: 12px; padding: 7px; }
+  .log-box {
+    background: #0a0a0d;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .log-box div { padding: 3px 0; border-bottom: 1px solid #1a1a22; color: #aaa; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GetDigitals Flow</h1>
+  <div class="subtitle">Drive se Instagram tak — ek click mein publish</div>
+
+  {% if configured %}
+    <span class="status ok">✅ Instagram connected (ID: {{ ig_user_id }})</span>
+  {% else %}
+    <span class="status warn">⚠️ .env file mein IG_USER_ID aur IG_ACCESS_TOKEN set karo</span>
+  {% endif %}
+
+  <div class="card">
+    <h2>1. Google Drive Folder Connect Karo</h2>
+    <input type="text" id="folderId" placeholder="Drive folder ID paste karo (public/shared folder)">
+    <button onclick="fetchFiles()">📂 Fetch Files</button>
+  </div>
+
+  <div class="card" id="filesCard" style="display:none;">
+    <h2>2. File Select Karke Publish Karo</h2>
+    <input type="text" id="caption" placeholder="Caption likho (e.g. 1 Lakh+ Viral Reels — Sirf ₹199)">
+    <div class="files-grid" id="filesGrid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Activity Log</h2>
+    <div class="log-box" id="logBox">
+      {% for entry in log %}
+        <div>{{ entry }}</div>
+      {% else %}
+        <div>Abhi tak koi activity nahi...</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script>
+async function fetchFiles() {
+  const folderId = document.getElementById('folderId').value.trim();
+  if (!folderId) { alert('Folder ID daalo pehle'); return; }
+
+  const res = await fetch('/api/drive-files', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({folder_id: folderId})
+  });
+  const data = await res.json();
+
+  if (data.error) { alert('Error: ' + data.error); refreshLog(); return; }
+
+  const grid = document.getElementById('filesGrid');
+  grid.innerHTML = '';
+  data.files.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'file-card';
+    div.innerHTML = `
+      <img src="${f.thumbnailLink || ''}" onerror="this.style.display='none'">
+      <div class="name">${f.name}</div>
+      <button onclick="publish('${f.id}', this)">🚀 Publish</button>
+    `;
+    grid.appendChild(div);
+  });
+  document.getElementById('filesCard').style.display = 'block';
+  refreshLog();
+}
+
+async function publish(fileId, btn) {
+  const caption = document.getElementById('caption').value;
+  btn.disabled = true;
+  btn.innerText = 'Posting...';
+
+  const res = await fetch('/api/publish', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({file_id: fileId, caption: caption})
+  });
+  const data = await res.json();
+
+  if (data.success) {
+    btn.innerText = '✅ Posted!';
+  } else {
+    btn.innerText = '❌ Failed';
+    alert('Error: ' + data.error);
+  }
+  refreshLog();
+}
+
+async function refreshLog() {
+  const res = await fetch('/api/log');
+  const data = await res.json();
+  const box = document.getElementById('logBox');
+  box.innerHTML = data.log.length
+    ? data.log.map(l => `<div>${l}</div>`).join('')
+    : '<div>Abhi tak koi activity nahi...</div>';
+}
+
+setInterval(refreshLog, 5000);
+</script>
+</body>
+</html>
