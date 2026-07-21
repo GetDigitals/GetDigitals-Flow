@@ -2,14 +2,15 @@
 GetDigitals Flow — Basic Demo
 ------------------------------
 Ek chhota Flask app jo dikhata hai:
-  1. Google Drive ke public folder se images fetch karna
-  2. Un images ko Instagram Business account par publish karna (Graph API)
+  1. Google Drive ke public folder se images/videos fetch karna
+  2. Unhe Instagram Business account par publish karna (Graph API)
 
 Ye app Meta App Review ke liye screencast demo banane ke kaam aayega.
 Production mein iske upar scheduling, error-handling, aur database add hoga.
 """
 
 import os
+import time
 import requests
 from flask import Flask, render_template, request, jsonify, redirect, url_for
 from dotenv import load_dotenv
@@ -47,7 +48,7 @@ def index():
 @app.route("/api/drive-files", methods=["POST"])
 def get_drive_files():
     """
-    Public Google Drive folder se image files ki list laata hai.
+    Public Google Drive folder se image/video files ki list laata hai.
     Folder "Anyone with the link -> Viewer" hona chahiye.
     """
     folder_id = request.json.get("folder_id", "").strip()
@@ -82,8 +83,9 @@ def get_drive_files():
 @app.route("/api/publish", methods=["POST"])
 def publish_to_instagram():
     """
-    Ek image ko Instagram Business account par publish karta hai.
+    Ek image ya video ko Instagram Business account par publish karta hai.
     Do-step Graph API flow: media container banao -> phir publish karo.
+    Video ke liye extra: mimeType detect + status_code poll (FINISHED hone tak wait).
     """
     file_id = request.json.get("file_id", "").strip()
     caption = request.json.get("caption", "").strip()
@@ -92,23 +94,46 @@ def publish_to_instagram():
         return jsonify({"error": "IG_USER_ID / IG_ACCESS_TOKEN .env mein set nahi hai"}), 400
     if not file_id:
         return jsonify({"error": "file_id zaroori hai"}), 400
+    if not GOOGLE_API_KEY:
+        return jsonify({"error": "GOOGLE_API_KEY .env mein set nahi hai"}), 400
 
-    # Google Drive file ka direct-view URL (publicly shared file hona chahiye)
-    image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    # Step 0: File ka mimeType pata karo — image ya video decide karne ke liye
+    try:
+        meta_resp = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={"fields": "mimeType,name", "key": GOOGLE_API_KEY},
+            timeout=15,
+        ).json()
+        if "error" in meta_resp:
+            msg = meta_resp["error"].get("message", "File metadata fetch failed")
+            log(f"❌ File metadata fail: {msg}")
+            return jsonify({"error": msg}), 400
+        mime_type = meta_resp.get("mimeType", "")
+    except Exception as e:
+        log(f"❌ File metadata exception: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    is_video = mime_type.startswith("video/")
+
+    # Direct media URL — Drive API ka alt=media endpoint (uc?export=view se zyada reliable,
+    # sahi Content-Type ke sath actual binary deta hai, HTML confirmation page nahi)
+    media_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_API_KEY}"
 
     base = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{IG_USER_ID}"
 
     try:
-        # Step 1: Media container banao
-        container_resp = requests.post(
-            f"{base}/media",
-            data={
-                "image_url": image_url,
-                "caption": caption,
-                "access_token": IG_ACCESS_TOKEN,
-            },
-            timeout=30,
-        ).json()
+        # Step 1: Media container banao — image ya video ke hisaab se sahi param
+        container_data = {
+            "caption": caption,
+            "access_token": IG_ACCESS_TOKEN,
+        }
+        if is_video:
+            container_data["media_type"] = "REELS"
+            container_data["video_url"] = media_url
+        else:
+            container_data["image_url"] = media_url
+
+        container_resp = requests.post(f"{base}/media", data=container_data, timeout=60).json()
 
         if "error" in container_resp:
             msg = container_resp["error"].get("message", "Container creation failed")
@@ -118,7 +143,29 @@ def publish_to_instagram():
         creation_id = container_resp["id"]
         log(f"📦 Container bana: {creation_id}")
 
-        # Step 2: Publish karo
+        # Step 2: Video hai toh status FINISHED hone tak wait karo (Meta processing leta hai)
+        if is_video:
+            status = "IN_PROGRESS"
+            attempts = 0
+            while status not in ("FINISHED", "ERROR") and attempts < 30:
+                time.sleep(3)
+                status_resp = requests.get(
+                    f"https://graph.facebook.com/{GRAPH_API_VERSION}/{creation_id}",
+                    params={"fields": "status_code", "access_token": IG_ACCESS_TOKEN},
+                    timeout=15,
+                ).json()
+                status = status_resp.get("status_code", "IN_PROGRESS")
+                attempts += 1
+                log(f"⏳ Video processing: {status} (try {attempts}/30)")
+
+            if status == "ERROR":
+                log("❌ Video processing failed Meta ki taraf se")
+                return jsonify({"error": "Video processing failed on Meta's side"}), 400
+            if status != "FINISHED":
+                log("❌ Timeout: video processing bahut time le raha hai")
+                return jsonify({"error": "Video processing timeout — thodi der baad try karo"}), 400
+
+        # Step 3: Publish karo
         publish_resp = requests.post(
             f"{base}/media_publish",
             data={
