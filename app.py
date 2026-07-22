@@ -36,6 +36,31 @@ def log(message):
     print(message)
 
 
+def extract_folder_id(text):
+    """
+    User ne poora Google Drive folder link paste kiya ho ya sirf ID —
+    dono cases mein sahi folder ID nikaal deta hai.
+    Examples ye sab handle karta hai:
+      https://drive.google.com/drive/folders/1g8I-XXXX?usp=sharing
+      https://drive.google.com/drive/folders/1g8I-XXXX
+      1g8I-XXXX   (already ID)
+    """
+    text = text.strip()
+
+    # Pattern 1: /folders/FOLDER_ID
+    match = re.search(r'/folders/([a-zA-Z0-9_-]+)', text)
+    if match:
+        return match.group(1)
+
+    # Pattern 2: ?id=FOLDER_ID (kabhi kabhi is format mein bhi link aata hai)
+    match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', text)
+    if match:
+        return match.group(1)
+
+    # Pattern 3: link nahi hai, seedha ID hi paste kiya hoga
+    return text
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -52,9 +77,10 @@ def get_drive_files():
     Public Google Drive folder se image/video files ki list laata hai.
     Folder "Anyone with the link -> Viewer" hona chahiye.
     """
-    folder_id = request.json.get("folder_id", "").strip()
-    if not folder_id:
-        return jsonify({"error": "Folder ID zaroori hai"}), 400
+    raw_input = request.json.get("folder_id", "").strip()
+    if not raw_input:
+        return jsonify({"error": "Folder ID ya link zaroori hai"}), 400
+    folder_id = extract_folder_id(raw_input)
     if not GOOGLE_API_KEY:
         return jsonify({"error": "GOOGLE_API_KEY .env file mein set nahi hai"}), 400
 
