@@ -1,29 +1,46 @@
 """
-GetDigitals Flow — Basic Demo
-------------------------------
-Ek chhota Flask app jo dikhata hai:
-  1. Google Drive ke public folder se images/videos fetch karna
-  2. Unhe Instagram Business account par publish karna (Graph API)
-
-Ye app Meta App Review ke liye screencast demo banane ke kaam aayega.
-Production mein iske upar scheduling, error-handling, aur database add hoga.
+GetDigitals Flow — SaaS Base (Login/Signup Added)
+---------------------------------------------------
+Step 1 of the SaaS roadmap: har user ka apna account, login/signup,
+aur unke apne Instagram/Drive settings (foundation for multi-account).
 """
 
 import os
 import re
 import time
 import requests
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from urllib.parse import quote
+from datetime import datetime
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import (
+    LoginManager, UserMixin, login_user, logout_user,
+    login_required, current_user
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "change-this-in-env-file-please")
 
-# ---- Config: .env file se aayega ----
-IG_USER_ID = os.getenv("IG_USER_ID", "")          # e.g. 17841407648926658
-IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "")  # Page/User access token jisme instagram_business_content_publish ho
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")    # Drive API key (public folder read ke liye)
+# ---- Database config ----
+database_url = os.getenv("DATABASE_URL", "sqlite:///local_dev.db")
+# Render/Neon sometimes give postgres:// but SQLAlchemy needs postgresql://
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login"
+login_manager.login_message = "Pehle login karo yeh page dekhne ke liye."
+
 GRAPH_API_VERSION = "v25.0"
 
 # Simple in-memory log — production mein ye database mein jayega
@@ -32,63 +49,206 @@ activity_log = []
 
 def log(message):
     activity_log.insert(0, message)
-    activity_log[:] = activity_log[:20]  # last 20 entries hi rakho
+    activity_log[:] = activity_log[:20]
     print(message)
 
 
-def extract_folder_id(text):
-    """
-    User ne poora Google Drive folder link paste kiya ho ya sirf ID —
-    dono cases mein sahi folder ID nikaal deta hai.
-    Examples ye sab handle karta hai:
-      https://drive.google.com/drive/folders/1g8I-XXXX?usp=sharing
-      https://drive.google.com/drive/folders/1g8I-XXXX
-      1g8I-XXXX   (already ID)
-    """
-    text = text.strip()
+# ================= MODELS =================
 
-    # Pattern 1: /folders/FOLDER_ID
+class User(UserMixin, db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    phone = db.Column(db.String(20))
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Foundation for Step 2 (multi-account) — filhaal ek hi IG account per user
+    ig_user_id = db.Column(db.String(120))
+    ig_access_token = db.Column(db.Text)
+    google_api_key = db.Column(db.String(255))
+
+    def set_password(self, raw_password):
+        self.password_hash = generate_password_hash(raw_password)
+
+    def check_password(self, raw_password):
+        return check_password_hash(self.password_hash, raw_password)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+
+with app.app_context():
+    db.create_all()
+
+
+def extract_folder_id(text):
+    text = text.strip()
     match = re.search(r'/folders/([a-zA-Z0-9_-]+)', text)
     if match:
         return match.group(1)
-
-    # Pattern 2: ?id=FOLDER_ID (kabhi kabhi is format mein bhi link aata hai)
     match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', text)
     if match:
         return match.group(1)
-
-    # Pattern 3: link nahi hai, seedha ID hi paste kiya hoga
     return text
 
 
+# ================= AUTH ROUTES =================
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        phone = request.form.get("phone", "").strip()
+        password = request.form.get("password", "")
+
+        if not name or not email or not password:
+            flash("Naam, email aur password zaroori hai.")
+            return redirect(url_for("signup"))
+
+        if User.query.filter_by(email=email).first():
+            flash("Yeh email pehle se registered hai. Login karo.")
+            return redirect(url_for("login"))
+
+        new_user = User(name=name, email=email, phone=phone)
+        new_user.set_password(password)
+        db.session.add(new_user)
+        db.session.commit()
+
+        login_user(new_user)
+        log(f"✅ Naya user sign up hua: {email}")
+        return redirect(url_for("index"))
+
+    return render_template("signup.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        user = User.query.filter_by(email=email).first()
+        if user and user.check_password(password):
+            login_user(user)
+            log(f"🔐 Login: {email}")
+            return redirect(url_for("index"))
+
+        flash("Email ya password galat hai.")
+        return redirect(url_for("login"))
+
+    return render_template("login.html")
+
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+# ================= MAIN APP ROUTES (ab login zaroori hai) =================
+
 @app.route("/")
+@login_required
 def index():
     return render_template(
         "index.html",
-        ig_user_id=IG_USER_ID,
-        configured=bool(IG_USER_ID and IG_ACCESS_TOKEN),
+        ig_user_id=current_user.ig_user_id or "",
+        configured=bool(current_user.ig_user_id and current_user.ig_access_token),
         log=activity_log,
+        user=current_user,
     )
 
 
+@app.route("/studio")
+@login_required
+def studio():
+    return render_template("studio.html", user=current_user)
+
+
+@app.route("/api/generate-image", methods=["POST"])
+@login_required
+def generate_image():
+    """
+    Pollinations.ai (Flux model) se free AI image banata hai.
+    Koi API key nahi chahiye — seedha URL se image milti hai.
+    """
+    prompt = request.json.get("prompt", "").strip()
+    width = request.json.get("width", 1024)
+    height = request.json.get("height", 1024)
+
+    if not prompt:
+        return jsonify({"error": "Prompt zaroori hai"}), 400
+
+    try:
+        encoded_prompt = quote(prompt)
+        # seed taaki har baar naya variation aaye, na ki cached same image
+        seed = int(time.time())
+        image_url = (
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            f"?width={width}&height={height}&seed={seed}&model=flux&nologo=true"
+        )
+
+        # Verify the image actually generated (Pollinations can be slow/cold-start)
+        check = requests.get(image_url, timeout=60)
+        if check.status_code != 200:
+            log(f"❌ Image generation failed: status {check.status_code}")
+            return jsonify({"error": "Image generate nahi ho payi, dobara try karo"}), 500
+
+        log(f"🎨 AI Image bani: \"{prompt[:50]}...\"")
+        return jsonify({"success": True, "image_url": image_url})
+
+    except requests.exceptions.Timeout:
+        log("❌ Image generation timeout")
+        return jsonify({"error": "Timeout — Pollinations slow chal raha hai, dobara try karo"}), 504
+    except Exception as e:
+        log(f"❌ Image generation exception: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    if request.method == "POST":
+        current_user.ig_user_id = request.form.get("ig_user_id", "").strip()
+        current_user.ig_access_token = request.form.get("ig_access_token", "").strip()
+        current_user.google_api_key = request.form.get("google_api_key", "").strip()
+        db.session.commit()
+        flash("Settings save ho gayi.")
+        return redirect(url_for("settings"))
+
+    return render_template("settings.html", user=current_user)
+
+
 @app.route("/api/drive-files", methods=["POST"])
+@login_required
 def get_drive_files():
-    """
-    Public Google Drive folder se image/video files ki list laata hai.
-    Folder "Anyone with the link -> Viewer" hona chahiye.
-    """
     raw_input = request.json.get("folder_id", "").strip()
     if not raw_input:
         return jsonify({"error": "Folder ID ya link zaroori hai"}), 400
     folder_id = extract_folder_id(raw_input)
-    if not GOOGLE_API_KEY:
-        return jsonify({"error": "GOOGLE_API_KEY .env file mein set nahi hai"}), 400
+
+    google_api_key = current_user.google_api_key
+    if not google_api_key:
+        return jsonify({"error": "Pehle Settings mein Google API Key daalo"}), 400
 
     url = "https://www.googleapis.com/drive/v3/files"
     params = {
         "q": f"'{folder_id}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed=false",
         "fields": "files(id,name,mimeType,thumbnailLink,webContentLink)",
-        "key": GOOGLE_API_KEY,
+        "key": google_api_key,
         "pageSize": 25,
     }
 
@@ -108,51 +268,53 @@ def get_drive_files():
 
 
 @app.route("/api/publish", methods=["POST"])
+@login_required
 def publish_to_instagram():
-    """
-    Ek image ya video ko Instagram Business account par publish karta hai.
-    Do-step Graph API flow: media container banao -> phir publish karo.
-    Video ke liye extra: mimeType detect + status_code poll (FINISHED hone tak wait).
-    """
     file_id = request.json.get("file_id", "").strip()
+    direct_image_url = request.json.get("image_url", "").strip()  # AI-generated image se
     caption = request.json.get("caption", "").strip()
 
-    if not IG_USER_ID or not IG_ACCESS_TOKEN:
-        return jsonify({"error": "IG_USER_ID / IG_ACCESS_TOKEN .env mein set nahi hai"}), 400
-    if not file_id:
-        return jsonify({"error": "file_id zaroori hai"}), 400
-    if not GOOGLE_API_KEY:
-        return jsonify({"error": "GOOGLE_API_KEY .env mein set nahi hai"}), 400
+    ig_user_id = current_user.ig_user_id
+    ig_access_token = current_user.ig_access_token
+    google_api_key = current_user.google_api_key
 
-    # Step 0: File ka mimeType pata karo — image ya video decide karne ke liye
+    if not ig_user_id or not ig_access_token:
+        return jsonify({"error": "Pehle Settings mein Instagram connect karo"}), 400
+    if not file_id and not direct_image_url:
+        return jsonify({"error": "file_id ya image_url zaroori hai"}), 400
+
+    base = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{ig_user_id}"
+
+    # ---- Case A: AI-generated image (direct URL, koi Drive lookup nahi chahiye) ----
+    if direct_image_url:
+        is_video = False
+        media_url = direct_image_url
+    # ---- Case B: Google Drive file (jaisa pehle se tha) ----
+    else:
+        if not google_api_key:
+            return jsonify({"error": "Settings mein Google API Key zaroori hai"}), 400
+        try:
+            meta_resp = requests.get(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}",
+                params={"fields": "mimeType,name", "key": google_api_key},
+                timeout=15,
+            ).json()
+            if "error" in meta_resp:
+                msg = meta_resp["error"].get("message", "File metadata fetch failed")
+                log(f"❌ File metadata fail: {msg}")
+                return jsonify({"error": msg}), 400
+            mime_type = meta_resp.get("mimeType", "")
+        except Exception as e:
+            log(f"❌ File metadata exception: {e}")
+            return jsonify({"error": str(e)}), 500
+
+        is_video = mime_type.startswith("video/")
+        media_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={google_api_key}"
+
     try:
-        meta_resp = requests.get(
-            f"https://www.googleapis.com/drive/v3/files/{file_id}",
-            params={"fields": "mimeType,name", "key": GOOGLE_API_KEY},
-            timeout=15,
-        ).json()
-        if "error" in meta_resp:
-            msg = meta_resp["error"].get("message", "File metadata fetch failed")
-            log(f"❌ File metadata fail: {msg}")
-            return jsonify({"error": msg}), 400
-        mime_type = meta_resp.get("mimeType", "")
-    except Exception as e:
-        log(f"❌ File metadata exception: {e}")
-        return jsonify({"error": str(e)}), 500
-
-    is_video = mime_type.startswith("video/")
-
-    # Direct media URL — Drive API ka alt=media endpoint (uc?export=view se zyada reliable,
-    # sahi Content-Type ke sath actual binary deta hai, HTML confirmation page nahi)
-    media_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_API_KEY}"
-
-    base = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{IG_USER_ID}"
-
-    try:
-        # Step 1: Media container banao — image ya video ke hisaab se sahi param
         container_data = {
             "caption": caption,
-            "access_token": IG_ACCESS_TOKEN,
+            "access_token": ig_access_token,
         }
         if is_video:
             container_data["media_type"] = "REELS"
@@ -170,7 +332,6 @@ def publish_to_instagram():
         creation_id = container_resp["id"]
         log(f"📦 Container bana: {creation_id}")
 
-        # Step 2: Video hai toh status FINISHED hone tak wait karo (Meta processing leta hai)
         if is_video:
             status = "IN_PROGRESS"
             attempts = 0
@@ -178,7 +339,7 @@ def publish_to_instagram():
                 time.sleep(3)
                 status_resp = requests.get(
                     f"https://graph.facebook.com/{GRAPH_API_VERSION}/{creation_id}",
-                    params={"fields": "status_code", "access_token": IG_ACCESS_TOKEN},
+                    params={"fields": "status_code", "access_token": ig_access_token},
                     timeout=15,
                 ).json()
                 status = status_resp.get("status_code", "IN_PROGRESS")
@@ -192,13 +353,9 @@ def publish_to_instagram():
                 log("❌ Timeout: video processing bahut time le raha hai")
                 return jsonify({"error": "Video processing timeout — thodi der baad try karo"}), 400
 
-        # Step 3: Publish karo
         publish_resp = requests.post(
             f"{base}/media_publish",
-            data={
-                "creation_id": creation_id,
-                "access_token": IG_ACCESS_TOKEN,
-            },
+            data={"creation_id": creation_id, "access_token": ig_access_token},
             timeout=30,
         ).json()
 
@@ -217,6 +374,7 @@ def publish_to_instagram():
 
 
 @app.route("/api/log")
+@login_required
 def get_log():
     return jsonify({"log": activity_log})
 
