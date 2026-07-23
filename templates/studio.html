@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Studio — GetDigitals Flow</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0d0f1a;
+    color: #f1f1f1;
+    padding: 24px;
+  }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; max-width: 640px; margin-left: auto; margin-right: auto; }
+  .topbar a { color: #E8650A; text-decoration: none; font-size: 14px; }
+  .card {
+    background: #14172a;
+    border: 1px solid #262a44;
+    border-radius: 16px;
+    padding: 28px;
+    max-width: 640px;
+    margin: 0 auto 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #E8650A; }
+  p.sub { color: #9a9db8; margin: 0 0 24px; font-size: 14px; }
+  label { display: block; font-size: 13px; margin: 16px 0 6px; color: #c7c9de; }
+  textarea, input {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid #2c304e;
+    background: #0d0f1a;
+    color: #fff;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  input:focus, textarea:focus { outline: none; border-color: #E8650A; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button {
+    padding: 13px 24px;
+    border: none;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #E8650A, #ff8a3d);
+    color: #fff;
+    width: 100%;
+    margin-top: 20px;
+  }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-publish {
+    background: #1f7a3d;
+    color: #fff;
+    width: 100%;
+    margin-top: 14px;
+    display: none;
+  }
+  .btn-publish:disabled { opacity: 0.5; cursor: not-allowed; }
+  .preview {
+    margin-top: 20px;
+    display: none;
+    text-align: center;
+  }
+  .preview img {
+    max-width: 100%;
+    border-radius: 12px;
+    border: 1px solid #262a44;
+  }
+  .status {
+    margin-top: 14px;
+    font-size: 13px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    display: none;
+  }
+  .status.info { background: #1f2a3a; color: #9dc1ff; }
+  .status.success { background: #1f3a24; color: #9dffab; }
+  .status.error { background: #3a1f1f; color: #ff9d9d; }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span>👋 {{ user.name }}</span>
+    <a href="{{ url_for('index') }}">← Dashboard pe wapas</a>
+  </div>
+
+  <div class="card">
+    <h1>🎨 AI Studio</h1>
+    <p class="sub">Prompt likho, AI se image banao, aur seedha Instagram par publish karo.</p>
+
+    <label>Image Prompt</label>
+    <textarea id="prompt" placeholder="Jaise: a doctor in a modern hospital, cinematic lighting, high detail"></textarea>
+
+    <div class="row">
+      <div>
+        <label>Width</label>
+        <input type="number" id="width" value="1024" step="64">
+      </div>
+      <div>
+        <label>Height</label>
+        <input type="number" id="height" value="1024" step="64">
+      </div>
+    </div>
+
+    <button class="btn-primary" id="generateBtn" onclick="generateImage()">✨ Generate Image</button>
+
+    <div class="status" id="genStatus"></div>
+
+    <div class="preview" id="previewBox">
+      <img id="previewImg" src="" alt="Generated image">
+    </div>
+
+    <div id="publishSection" style="display:none;">
+      <label>Caption</label>
+      <textarea id="caption" placeholder="Instagram caption yahan likho..."></textarea>
+      <button class="btn-publish" id="publishBtn" onclick="publishImage()">🚀 Instagram Par Publish Karo</button>
+      <div class="status" id="publishStatus"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentImageUrl = null;
+
+    function showStatus(elId, type, message) {
+      const el = document.getElementById(elId);
+      el.className = "status " + type;
+      el.style.display = "block";
+      el.innerHTML = message;
+    }
+
+    async function generateImage() {
+      const prompt = document.getElementById("prompt").value.trim();
+      const width = document.getElementById("width").value;
+      const height = document.getElementById("height").value;
+      const btn = document.getElementById("generateBtn");
+
+      if (!prompt) {
+        showStatus("genStatus", "error", "Pehle prompt likho.");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Generate ho raha hai...';
+      showStatus("genStatus", "info", "AI image bana raha hai, 10-30 second lag sakte hain...");
+      document.getElementById("previewBox").style.display = "none";
+      document.getElementById("publishSection").style.display = "none";
+
+      try {
+        const res = await fetch("/api/generate-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, width: parseInt(width), height: parseInt(height) })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          currentImageUrl = data.image_url;
+          document.getElementById("previewImg").src = data.image_url;
+          document.getElementById("previewBox").style.display = "block";
+          document.getElementById("publishSection").style.display = "block";
+          showStatus("genStatus", "success", "✅ Image ban gayi! Neeche caption likho aur publish karo.");
+        } else {
+          showStatus("genStatus", "error", "❌ " + (data.error || "Kuch galat ho gaya"));
+        }
+      } catch (e) {
+        showStatus("genStatus", "error", "❌ " + e.message);
+      }
+
+      btn.disabled = false;
+      btn.innerHTML = "✨ Generate Image";
+    }
+
+    async function publishImage() {
+      const caption = document.getElementById("caption").value.trim();
+      const btn = document.getElementById("publishBtn");
+
+      if (!currentImageUrl) {
+        showStatus("publishStatus", "error", "Pehle image generate karo.");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Publish ho raha hai...';
+      showStatus("publishStatus", "info", "Instagram par publish ho raha hai...");
+
+      try {
+        const res = await fetch("/api/publish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image_url: currentImageUrl, caption })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          showStatus("publishStatus", "success", "🚀 LIVE ho gaya! Post ID: " + data.post_id);
+        } else {
+          showStatus("publishStatus", "error", "❌ " + (data.error || "Publish fail hua"));
+        }
+      } catch (e) {
+        showStatus("publishStatus", "error", "❌ " + e.message);
+      }
+
+      btn.disabled = false;
+      btn.innerHTML = "🚀 Instagram Par Publish Karo";
+    }
+  </script>
+</body>
+</html>
