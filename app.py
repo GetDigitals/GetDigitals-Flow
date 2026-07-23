@@ -42,6 +42,7 @@ login_manager.login_view = "login"
 login_manager.login_message = "Pehle login karo yeh page dekhne ke liye."
 
 GRAPH_API_VERSION = "v25.0"
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")  # Master key — sab users isi se Drive access karte hain
 
 # Simple in-memory log — production mein ye database mein jayega
 activity_log = []
@@ -224,7 +225,6 @@ def settings():
     if request.method == "POST":
         current_user.ig_user_id = request.form.get("ig_user_id", "").strip()
         current_user.ig_access_token = request.form.get("ig_access_token", "").strip()
-        current_user.google_api_key = request.form.get("google_api_key", "").strip()
         db.session.commit()
         flash("Settings save ho gayi.")
         return redirect(url_for("settings"))
@@ -240,15 +240,14 @@ def get_drive_files():
         return jsonify({"error": "Folder ID ya link zaroori hai"}), 400
     folder_id = extract_folder_id(raw_input)
 
-    google_api_key = current_user.google_api_key
-    if not google_api_key:
-        return jsonify({"error": "Pehle Settings mein Google API Key daalo"}), 400
+    if not GOOGLE_API_KEY:
+        return jsonify({"error": "Server ki Google API Key set nahi hai — Render Environment mein GOOGLE_API_KEY add karo"}), 400
 
     url = "https://www.googleapis.com/drive/v3/files"
     params = {
         "q": f"'{folder_id}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed=false",
         "fields": "files(id,name,mimeType,thumbnailLink,webContentLink)",
-        "key": google_api_key,
+        "key": GOOGLE_API_KEY,
         "pageSize": 25,
     }
 
@@ -276,7 +275,6 @@ def publish_to_instagram():
 
     ig_user_id = current_user.ig_user_id
     ig_access_token = current_user.ig_access_token
-    google_api_key = current_user.google_api_key
 
     if not ig_user_id or not ig_access_token:
         return jsonify({"error": "Pehle Settings mein Instagram connect karo"}), 400
@@ -291,12 +289,12 @@ def publish_to_instagram():
         media_url = direct_image_url
     # ---- Case B: Google Drive file (jaisa pehle se tha) ----
     else:
-        if not google_api_key:
-            return jsonify({"error": "Settings mein Google API Key zaroori hai"}), 400
+        if not GOOGLE_API_KEY:
+            return jsonify({"error": "Server ki Google API Key set nahi hai"}), 400
         try:
             meta_resp = requests.get(
                 f"https://www.googleapis.com/drive/v3/files/{file_id}",
-                params={"fields": "mimeType,name", "key": google_api_key},
+                params={"fields": "mimeType,name", "key": GOOGLE_API_KEY},
                 timeout=15,
             ).json()
             if "error" in meta_resp:
@@ -309,7 +307,7 @@ def publish_to_instagram():
             return jsonify({"error": str(e)}), 500
 
         is_video = mime_type.startswith("video/")
-        media_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={google_api_key}"
+        media_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_API_KEY}"
 
     try:
         container_data = {
