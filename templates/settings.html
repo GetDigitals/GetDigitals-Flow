@@ -21,7 +21,7 @@
     border-radius: 16px;
     padding: 28px;
     max-width: 640px;
-    margin: 0 auto;
+    margin: 0 auto 20px;
   }
   h1 { font-size: 20px; margin: 0 0 4px; color: #E8650A; }
   p.sub { color: #9a9db8; margin: 0 0 24px; font-size: 14px; }
@@ -66,7 +66,7 @@
 
   <div class="card">
     <h1>Settings</h1>
-    <p class="sub">Apna Instagram aur Google Drive access yahan connect karo.</p>
+    <p class="sub">Apna Instagram connect karo.</p>
 
     {% with messages = get_flashed_messages() %}
       {% if messages %}
@@ -74,16 +74,32 @@
       {% endif %}
     {% endwith %}
 
+    {% if user.ig_user_id and user.ig_auth_type == 'instagram_login' %}
+      <div class="flash" style="background:#1f3a24; color:#9dffab;">
+        ✅ Instagram connected via Instagram Login (ID: {{ user.ig_user_id }})
+      </div>
+      <a href="{{ url_for('connect_instagram') }}" style="display:inline-block; margin-top:10px; color:#E8650A; font-size:13px;">Dusra Instagram account connect karo →</a>
+    {% else %}
+      <a href="{{ url_for('connect_instagram') }}" style="text-decoration:none;">
+        <button type="button" style="width:100%; margin-top:10px; padding:15px; background:linear-gradient(135deg,#E8650A,#ff8a3d); border:none; border-radius:10px; color:#fff; font-weight:600; font-size:16px; cursor:pointer;">
+          📷 Connect Instagram
+        </button>
+      </a>
+      <div class="hint" style="margin-top:10px;">Apna Instagram username/password se login karo — Facebook Page ki zarurat nahi.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <p class="sub" style="margin-bottom:6px;">⚙️ Advanced: Manually token daalo (agency/System User setup ke liye)</p>
     <form method="POST" action="{{ url_for('settings') }}">
       <label>Instagram Business Account ID (IG_USER_ID)</label>
       <input type="text" name="ig_user_id" value="{{ user.ig_user_id or '' }}" placeholder="17841407648926658">
-      <div class="hint">Meta Business Settings se milega.</div>
 
       <label>Instagram Access Token</label>
       <input type="text" name="ig_access_token" value="{{ user.ig_access_token or '' }}" placeholder="System User token">
       <div class="hint">System User se generate kiya hua permanent token daalo.</div>
 
-      <button type="submit">Save Settings</button>
+      <button type="submit">Save Manually</button>
     </form>
   </div>
 </body>
